@@ -9,6 +9,10 @@ from selfdrive.car.hyundai.values import Buttons, SteerLimitParams, CAR, FEATURE
 from opendbc.can.packer import CANPacker
 from selfdrive.config import Conversions as CV
 
+#DIY cruise speed
+import cereal.messaging as messaging
+sm = messaging.SubMaster(['radarState'])
+
 VisualAlert = car.CarControl.HUDControl.VisualAlert
 min_set_speed = 30 * CV.KPH_TO_MS
 
@@ -243,4 +247,43 @@ class CarController():
       if (frame % 5) == 0:
         can_sends.append(create_spas12(CS.mdps_bus))
 
+    # DIY cruise speed code
+    sm.update(0)
+    
+    lead_data = sm['radarState'].leadOne
+    lead_one = sm['radarState'].leadOne
+    lead_two = sm['radarState'].leadTwo
+    
+    if lead_one.status == True:
+        lead_data = lead_one
+    
+    if lead_two.status == True and ((lead_one.dRel - lead_two.dRel) > 3.0):
+        lead_data = lead_two
+    
+    lead_rel_dist = lead_data.dRel
+    lead_rel_vel = lead_data.vRel
+    lead_vel = lead_data.vLead  
+
+    cruise_curr_set_speed = CS.out.cruiseState.speed    #currently set cruise speed in m/s
+    d_cru_vego = 1.11                                   #4km/h diff between cruise/realspeed  #cruise_curr_set_speed - CS.out.vEgo
+    min_dist = 10.                                      #min dist to lead car to engage in meters
+    max_dist = 300.                                     #max dist to lead car to disable acceleration and allow only deceleration
+    max_cru_speed = 36.11                               #limit set max cruise speed to 130km/h
+    press_button_speed = 40                             #press buttons at 400 milliseconds interval
+  
+    if (cruise_curr_set_speed - lead_vel) > 8.33:       #>30km/h faster button presses on deceleration and big cruise speed gap
+        press_button_speed = 5
+    elif (cruise_curr_set_speed - lead_vel) > 5.55:     #>20km/h
+        press_button_speed = 10
+    elif (cruise_curr_set_speed - lead_vel) > 2.77:     #>10km/h
+        press_button_speed = 20
+        
+    if lead_vel > (cruise_curr_set_speed - d_cru_vego) and lead_rel_dist > 0. and cruise_curr_set_speed < max_cru_speed and (frame % press_button_speed == 0 or frame % press_button_speed == 1):
+        if not CS.out.cruiseState.available:            #prevent pressing up and resume prev speed
+            can_sends.append(create_clu11(self.packer, frame, 0, CS.clu11, Buttons.SET_DECEL, clu11_speed)) #button down
+        elif lead_rel_dist > min_dist and lead_rel_dist < max_dist:
+            can_sends.append(create_clu11(self.packer, frame, 0, CS.clu11, Buttons.RES_ACCEL, clu11_speed)) #button up
+    elif lead_vel < (cruise_curr_set_speed - d_cru_vego) and lead_rel_dist > 0. and (frame % press_button_speed == 0 or frame % press_button_speed == 1):
+        can_sends.append(create_clu11(self.packer, frame, 0, CS.clu11, Buttons.SET_DECEL, clu11_speed)) #button down        
+        
     return can_sends
